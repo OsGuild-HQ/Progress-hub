@@ -1,0 +1,56 @@
+name: Validate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contributor-files:
+    name: Contributor files
+    runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      AUTHOR: ${{ github.event.pull_request.user.login }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      # Run the bot as it is on the target branch, so a PR can't loosen its own checks.
+      - name: Install the bot from the target branch
+        run: |
+          git worktree add "$RUNNER_TEMP/base" "origin/$BASE_REF"
+          if [ -f "$RUNNER_TEMP/base/pyproject.toml" ]; then
+            pip install "$RUNNER_TEMP/base"
+          else
+            echo "::notice::The target branch has no bot yet; using this PR's version."
+            pip install .
+          fi
+      - name: Check file format
+        run: progress-bot validate
+      - name: Check CODEOWNERS is up to date
+        run: progress-bot codeowners --check
+      - name: Check the author only changed folders they may change
+        run: |
+          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed.txt"
+          progress-bot check-ownership --author "$AUTHOR" \
+            --base-root "$RUNNER_TEMP/base" --changed-from "$RUNNER_TEMP/changed.txt"
+
+  tests:
+    name: Bot tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install uv
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run pytest -q
